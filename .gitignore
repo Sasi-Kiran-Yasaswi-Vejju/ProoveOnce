@@ -1,0 +1,43 @@
+# Dependencies
+node_modules/
+package-lock.json.bak
+
+# Hardhat build artifacts & cache
+artifacts/
+cache/
+typechain/
+typechain-types/
+
+# Zero-Knowledge Circuit build artifacts
+# (Re-generated via `npm run setup:zk` or `npm run setup:zk:win`)
+build/
+*.ptau
+*.zkey
+*.r1cs
+*.sym
+
+# Executables
+*.exe
+circom.exe
+
+# Environment & Secrets
+.env
+.env.*
+!.env.example
+
+# Test & Coverage
+coverage/
+coverage.json
+
+# IDE & OS files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*

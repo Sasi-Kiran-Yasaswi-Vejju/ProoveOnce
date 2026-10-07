@@ -1,0 +1,22 @@
+{
+  "name": "prove-once",
+  "version": "0.1.0",
+  "description": "Prove only once: zero-knowledge yes/no eligibility checks on blockchain",
+  "license": "MIT",
+  "scripts": {
+    "setup:zk": "bash scripts/setup.sh",
+    "setup:zk:win": "powershell -ExecutionPolicy Bypass -File scripts/setup.ps1",
+    "compile": "hardhat compile",
+    "demo": "hardhat run scripts/demo.js",
+    "test": "hardhat test"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "hardhat": "^2.22.0"
+  },
+  "dependencies": {
+    "circomlib": "^2.0.5",
+    "circomlibjs": "^0.1.7",
+    "snarkjs": "^0.7.4"
+  }
+}
