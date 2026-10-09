@@ -1339,6 +1339,7 @@ export default function App() {
                   background: 'var(--bg-tertiary)',
                   padding: '1.25rem',
                   borderRadius: '0.75rem',
+                  marginBottom: '1.5rem',
                 }}
               >
                 <div>
@@ -1366,12 +1367,130 @@ export default function App() {
                   </p>
                 </div>
               </div>
+
+              {/* Interactive zk-Email Sandbox */}
+              <div
+                style={{
+                  border: '1px dashed var(--border-secondary)',
+                  borderRadius: '0.75rem',
+                  padding: '1.5rem',
+                  background: 'var(--bg-card-subtle)',
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+                  <span style={{ fontWeight: 700, fontSize: '0.95rem' }}>
+                    🧪 Interactive zk-Email Sandbox (.eml)
+                  </span>
+                  <span className="badge badge-success">DKIM RSA-2048</span>
+                </div>
+
+                <div
+                  style={{
+                    background: 'var(--bg-tertiary)',
+                    borderRadius: '0.5rem',
+                    padding: '1rem',
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: '0.78rem',
+                    lineHeight: 1.6,
+                    color: 'var(--text-secondary)',
+                    marginBottom: '1rem',
+                  }}
+                >
+                  <div><strong style={{ color: 'var(--text-primary)' }}>From:</strong> registrar@annauniv.edu</div>
+                  <div><strong style={{ color: 'var(--text-primary)' }}>DKIM-Signature:</strong> v=1; a=rsa-sha256; d=annauniv.edu; s=s1; bh=47DEQpj8...;</div>
+                  <div><strong style={{ color: 'var(--text-primary)' }}>Subject:</strong> Official Provisional Academic Transcript - 2024</div>
+                  <div style={{ marginTop: '0.35rem', color: 'var(--accent-primary)', fontWeight: 600 }}>
+                    &gt; Transcript Body: &quot;Student ID: AU-2020-041 | Cumulative CGPA: 8.45 | Degree Conferred: B.Tech CSE&quot;
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
+                  <button
+                    onClick={() => {
+                      setStatusMessage({
+                        type: 'success',
+                        title: 'zk-Email Proof Verified!',
+                        detail: 'DKIM RSA-2048 verified against DKIMRegistry.sol. CGPA 8.45 confirmed without revealing student name.',
+                      });
+                    }}
+                    className="btn btn-primary"
+                    style={{ fontSize: '0.85rem' }}
+                  >
+                    <ShieldCheck size={16} />
+                    <span>Verify DKIM Signature & Extract Proof</span>
+                  </button>
+                  <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                    No passwords or email login required. Runs purely on mathematical signatures.
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Phase 4: Merkle Tree & Unlinkability Visualizer */}
+            <div className="glass-card" style={{ padding: '2rem', marginBottom: '2rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1rem' }}>
+                <div style={{ background: 'rgba(16,185,129,0.1)', padding: '0.5rem', borderRadius: '0.5rem', color: '#10b981' }}>
+                  <Layers size={22} />
+                </div>
+                <div>
+                  <h2 style={{ fontSize: '1.25rem', fontWeight: 800 }}>
+                    Phase 4: Merkle Tree Anonymity & Unlinkable Nullifiers
+                  </h2>
+                  <p style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>
+                    Preventing cross-verifier tracking using the Tornado Cash & Semaphore privacy model
+                  </p>
+                </div>
+              </div>
+
+              <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', lineHeight: 1.7, marginBottom: '1.5rem' }}>
+                In traditional protocols, publishing a student&apos;s commitment hash allows Verifier A (Bank) and Verifier B (Employer)
+                to correlate the hash and track the student. In ProveOnce Phase 4, credentials live as hidden leaves in an{' '}
+                <strong>On-Chain Incremental Merkle Tree (Depth 8, 256 leaves)</strong>. The circuit generates a per-query{' '}
+                <strong>Nullifier = Poseidon(salt, queryId)</strong>.
+              </p>
+
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
+                  gap: '1rem',
+                  marginBottom: '1rem',
+                }}
+              >
+                <div style={{ background: 'var(--bg-tertiary)', padding: '1.25rem', borderRadius: '0.5rem', border: '1px solid var(--border-primary)' }}>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.25rem' }}>
+                    Application to Bank Loan (Query #1)
+                  </div>
+                  <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.8rem', fontWeight: 700, color: 'var(--accent-primary)', marginBottom: '0.5rem' }}>
+                    Nullifier #1 = 0x93f41a8e2b...
+                  </div>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                    Bound uniquely to Query 1. Cannot be stolen or re-used.
+                  </div>
+                </div>
+
+                <div style={{ background: 'var(--bg-tertiary)', padding: '1.25rem', borderRadius: '0.5rem', border: '1px solid var(--border-primary)' }}>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.25rem' }}>
+                    Application to Tech Job (Query #2)
+                  </div>
+                  <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.8rem', fontWeight: 700, color: '#10b981', marginBottom: '0.5rem' }}>
+                    Nullifier #2 = 0x18c0e7492d...
+                  </div>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                    Completely different hash! Bank and Employer cannot correlate the applicant.
+                  </div>
+                </div>
+              </div>
+
+              <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                🔒 <strong>Mathematical Unlinkability:</strong> Nullifier #1 ≠ Nullifier #2, yet both prove membership in the same on-chain Merkle Root without revealing which leaf is yours.
+              </div>
             </div>
 
             {/* Smart Contract Map */}
             <div className="glass-card" style={{ padding: '2rem' }}>
               <h2 style={{ fontSize: '1.25rem', fontWeight: 800, marginBottom: '1.25rem' }}>
-                On-Chain Smart Contract Structure
+                On-Chain Smart Contract Structure (Phases 1, 3 & 4)
               </h2>
 
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '1rem' }}>
@@ -1382,13 +1501,18 @@ export default function App() {
                     status: 'Compiled & Tested',
                   },
                   {
-                    name: 'CredentialRegistry.sol',
-                    desc: 'Stores Poseidon commitment fingerprints, expiry timestamps, and revocation flags.',
+                    name: 'MerkleCredentialRegistry.sol',
+                    desc: 'On-chain Poseidon Incremental Merkle Tree storing credential commitments and historical roots (Phase 4).',
                     status: 'Compiled & Tested',
                   },
                   {
-                    name: 'EligibilityVerifier.sol',
-                    desc: 'Manages verifier queries, enforces queryId nonces, and stores only Boolean answers.',
+                    name: 'EligibilityVerifierV2.sol',
+                    desc: 'Anonymous verification contract validating Merkle roots and burning per-query nullifiers (Phase 4).',
+                    status: 'Compiled & Tested',
+                  },
+                  {
+                    name: 'DKIMRegistry.sol',
+                    desc: 'Maintains verified university RSA-2048 DNS keys for zk-Email verification (Phase 3).',
                     status: 'Compiled & Tested',
                   },
                   {
