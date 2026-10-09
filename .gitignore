@@ -7,6 +7,8 @@ artifacts/
 cache/
 typechain/
 typechain-types/
+dist/
+frontend/dist/
 
 # Zero-Knowledge Circuit build artifacts
 # (Re-generated via `npm run setup:zk` or `npm run setup:zk:win`)
