@@ -15,6 +15,9 @@ frontend/dist/
 build/
 *.ptau
 *.zkey
+# The web UI proves in the browser, so it ships the (public) proving key that matches
+# the deployed Groth16Verifier.
+!frontend/public/zk/eligibility_final.zkey
 *.r1cs
 *.sym
 
