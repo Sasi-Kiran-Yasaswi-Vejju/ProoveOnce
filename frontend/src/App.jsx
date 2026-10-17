@@ -55,6 +55,15 @@ function loadStoredCredential() {
 
 const shortAddr = (a) => `${a.substring(0, 6)}...${a.substring(38)}`;
 
+// Demo accounts on Base Sepolia, so the header shows which role is connected
+const KNOWN_ACCOUNTS = {
+  '0x0332a7deb95aca50c2f4db808a80ca3525dab7c9': 'Owner',
+  '0x3c317327c6652f78289320d58a8e595243347b06': 'University',
+  '0x787091536fd3887c8d366345defcfafb2505b2b0': 'Student',
+  '0x91fe5fae5db20e077208403395e47424f888cd15': 'Bank',
+};
+const roleOf = (a) => KNOWN_ACCOUNTS[a?.toLowerCase()];
+
 const FIELD_LABELS = {
   0: { name: 'CGPA (x100)', unit: 'CGPA', format: (v) => (Number(v) / 100).toFixed(2) },
   1: { name: 'Graduation Year', unit: 'Year', format: (v) => String(v) },
@@ -444,6 +453,19 @@ export default function App() {
     }
   };
 
+  // MetaMask only exposes the accounts the user approved for this site, so switching roles
+  // means re-opening its account picker; accountsChanged then reconnects with the new account.
+  const handleSwitchAccount = async () => {
+    try {
+      await window.ethereum.request({ method: 'wallet_requestPermissions', params: [{ eth_accounts: {} }] });
+      await handleConnectWallet();
+    } catch (err) {
+      if (err.code !== 4001) {
+        setStatusMessage({ type: 'error', title: 'Could Not Switch Account', detail: err.message });
+      }
+    }
+  };
+
   // Sync live queries (and the student's credential status) from the deployed contracts
   const syncFromBlockchain = async () => {
     try {
@@ -784,14 +806,15 @@ export default function App() {
 
             {/* Wallet Button */}
             <button
-              onClick={walletInfo.connected ? () => setWalletConnected(!walletConnected) : handleConnectWallet}
+              onClick={walletInfo.connected ? handleSwitchAccount : handleConnectWallet}
               className={walletInfo.connected ? 'btn btn-secondary' : 'btn btn-primary'}
+              title={walletInfo.connected ? 'Switch MetaMask account' : 'Connect MetaMask'}
               style={{ fontSize: '0.82rem', display: 'flex', alignItems: 'center', gap: '0.4rem' }}
             >
               <Wallet size={16} />
               <span>
                 {walletInfo.connected
-                  ? `${walletInfo.address.substring(0, 6)}...${walletInfo.address.substring(38)} (${walletInfo.balance} ETH)`
+                  ? `${roleOf(walletInfo.address) ? roleOf(walletInfo.address) + ' · ' : ''}${shortAddr(walletInfo.address)} (${walletInfo.balance} ETH)`
                   : 'Connect MetaMask'}
               </span>
             </button>
