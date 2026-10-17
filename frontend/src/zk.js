@@ -19,7 +19,35 @@ function loadSnarkjs() {
   return snarkjsPromise;
 }
 
-const CREDENTIAL_KEYS = ['fields', 'salt', 'sigR8x', 'sigR8y', 'sigS', 'commitment', 'issuerAx', 'issuerAy', 'issuerAddress'];
+// ---------------- ISSUER SIDE (via the local signing service, scripts/signer.js) ----------------
+export const SIGNER_URL = 'http://localhost:3002';
+
+async function callSigner(path, body) {
+  let res;
+  try {
+    res = await fetch(SIGNER_URL + path, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body || {}),
+    });
+  } catch {
+    throw new Error('University signing service is not running. Start it with: npm run signer');
+  }
+  const data = await res.json();
+  if (!data.success) throw new Error(data.error || 'Signing service error');
+  return data;
+}
+
+/** New BabyJubJub keypair for the university: { prvHex, ax, ay } */
+export const createIssuerKey = () => callSigner('/api/issuer/key');
+
+/** Signs the student's fields ({ CGPA_X100: 845, ... }) with the university key. */
+export async function signCredential(prvHex, fields) {
+  const { credential } = await callSigner('/api/issuer/sign', { prvHex, fields });
+  return credential;
+}
+
+const CREDENTIAL_KEYS =['fields', 'salt', 'sigR8x', 'sigR8y', 'sigS', 'commitment', 'issuerAx', 'issuerAy', 'issuerAddress'];
 
 /** Validates an imported credential bundle (build/student-credential.json). */
 export function parseCredential(json) {

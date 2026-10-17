@@ -40,9 +40,11 @@ import {
   readQuery,
   requestWalletConnection,
 } from './contracts';
-import { parseCredential, proveQuery } from './zk';
+import { createIssuerKey, parseCredential, proveQuery, signCredential } from './zk';
 
 const CREDENTIAL_STORAGE_KEY = 'proveonce.credential';
+// University's BabyJubJub signing key. Demo only: kept in this browser's storage.
+const ISSUER_KEY_STORAGE_KEY = 'proveonce.issuerKey';
 
 function loadStoredCredential() {
   try {
@@ -51,6 +53,23 @@ function loadStoredCredential() {
   } catch {
     return null;
   }
+}
+
+function loadStoredIssuerKey() {
+  try {
+    return JSON.parse(localStorage.getItem(ISSUER_KEY_STORAGE_KEY)) || null;
+  } catch {
+    return null;
+  }
+}
+
+function downloadJson(filename, data) {
+  const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 const shortAddr = (a) => `${a.substring(0, 6)}...${a.substring(38)}`;
@@ -111,6 +130,11 @@ export default function App() {
   // Student's private credential bundle, imported from a file and kept only in this browser
   const [credential, setCredential] = useState(loadStoredCredential);
   const [credentialValid, setCredentialValid] = useState(null);
+
+  // Issuer Hub: university signing key, the last certificate it issued, and busy flag
+  const [issuerKey, setIssuerKey] = useState(loadStoredIssuerKey);
+  const [issuedCredential, setIssuedCredential] = useState(null);
+  const [issuerBusy, setIssuerBusy] = useState(null);
 
   // Pre-configured state simulating on-chain credentials & queries
   const [issuers, setIssuers] = useState([
@@ -226,11 +250,13 @@ export default function App() {
 
   // Form states for Issuer
   const [issueForm, setIssueForm] = useState({
-    issuerId: 'uni',
+    issuerName: 'Amrita University',
+    title: 'B.Tech Transcript & Income Certificate',
     cgpa: '8.45',
     gradYear: '2024',
     income: '650000',
     category: '1',
+    birthYear: '2002',
     backlogs: '0',
   });
 
@@ -466,6 +492,105 @@ export default function App() {
     }
   };
 
+  const getSignerAddress = async () => {
+    const signer = await new ethers.BrowserProvider(window.ethereum).getSigner();
+    return { signer, address: await signer.getAddress() };
+  };
+
+  const runIssuerStep = async (step, fn) => {
+    if (!walletInfo.connected) {
+      await handleConnectWallet();
+      return;
+    }
+    try {
+      setIssuerBusy(step);
+      await fn();
+    } catch (err) {
+      console.error(err);
+      setStatusMessage({
+        type: 'error',
+        title: 'Issuer Step Failed',
+        detail: err.reason || err.shortMessage || err.message,
+      });
+    } finally {
+      setIssuerBusy(null);
+    }
+  };
+
+  // Step 1 (University): create the off-chain BabyJubJub signing key for the connected account
+  const handleGenerateIssuerKey = () =>
+    runIssuerStep('key', async () => {
+      const { address } = await getSignerAddress();
+      const key = await createIssuerKey();
+      const record = { address, ...key };
+      localStorage.setItem(ISSUER_KEY_STORAGE_KEY, JSON.stringify(record));
+      setIssuerKey(record);
+      setStatusMessage({
+        type: 'success',
+        title: 'University Signing Key Created',
+        detail: `Key for ${shortAddr(address)}. Next: switch to Owner and approve this university.`,
+      });
+    });
+
+  // Step 2 (Owner): approve the university on-chain with its public key
+  const handleApproveIssuer = () =>
+    runIssuerStep('approve', async () => {
+      const { signer } = await getSignerAddress();
+      const registry = new ethers.Contract(issuerRegistryAddress, ISSUER_REGISTRY_ABI, signer);
+      setStatusMessage({ type: 'info', title: 'Confirm in MetaMask', detail: 'IssuerRegistry.addIssuer(...)' });
+      const tx = await registry.addIssuer(issuerKey.address, issueForm.issuerName, issuerKey.ax, issuerKey.ay);
+      const receipt = await tx.wait();
+      await syncFromBlockchain();
+      setStatusMessage({
+        type: 'success',
+        title: `${issueForm.issuerName} Approved On-Chain`,
+        detail: `Block #${receipt.blockNumber}. Next: switch to University and issue the certificate.`,
+      });
+    });
+
+  // Step 3 (University): sign the student's data off-chain, register only the commitment on-chain
+  const handleIssueCredential = (e) => {
+    e.preventDefault();
+    return runIssuerStep('issue', async () => {
+      const { signer, address } = await getSignerAddress();
+      if (address.toLowerCase() !== issuerKey.address.toLowerCase()) {
+        throw new Error(`Switch MetaMask to the University account (${shortAddr(issuerKey.address)}).`);
+      }
+      const fields = {
+        CGPA_X100: Math.round(parseFloat(issueForm.cgpa) * 100),
+        GRAD_YEAR: Number(issueForm.gradYear),
+        ANNUAL_INCOME: Number(issueForm.income),
+        CATEGORY: Number(issueForm.category),
+        BIRTH_YEAR: Number(issueForm.birthYear),
+        BACKLOGS: Number(issueForm.backlogs),
+      };
+      if (Object.values(fields).some((v) => !Number.isInteger(v) || v < 0)) {
+        throw new Error('All values must be non-negative numbers.');
+      }
+
+      const signed = await signCredential(issuerKey.prvHex, fields);
+      const registry = new ethers.Contract(DEFAULT_ADDRESSES.contracts.CredentialRegistry, CREDENTIAL_REGISTRY_ABI, signer);
+      setStatusMessage({ type: 'info', title: 'Confirm in MetaMask', detail: 'CredentialRegistry.register(commitment, 0)' });
+      const tx = await registry.register(signed.commitment, 0);
+      const receipt = await tx.wait();
+
+      const cred = {
+        title: issueForm.title,
+        issuerAddress: issuerKey.address,
+        issuerAx: issuerKey.ax,
+        issuerAy: issuerKey.ay,
+        ...signed,
+      };
+      setIssuedCredential(cred);
+      downloadJson('student-credential.json', cred);
+      setStatusMessage({
+        type: 'success',
+        title: 'Certificate Registered On-Chain',
+        detail: `Block #${receipt.blockNumber}: only the commitment was stored. student-credential.json downloaded for the student.`,
+      });
+    });
+  };
+
   // Sync live queries (and the student's credential status) from the deployed contracts
   const syncFromBlockchain = async () => {
     try {
@@ -495,21 +620,23 @@ export default function App() {
       // Keep only "Quick Add" simulated queries; the built-in samples give way to real data
       setQueries((prev) => [...onChainQueries, ...prev.filter((p) => !p.isOnChain && p.id.startsWith('S'))]);
 
-      if (credential) {
+      // Issuers we care about: the student's credential issuer and this browser's university key
+      const issuerAddrs = [...new Set([credential?.issuerAddress, issuerKey?.address].filter(Boolean).map((a) => ethers.getAddress(a)))];
+      if (issuerAddrs.length) {
         const ir = new ethers.Contract(issuerRegistryAddress, ISSUER_REGISTRY_ABI, provider);
+        const onChainIssuers = await Promise.all(issuerAddrs.map((a) => ir.issuers(a)));
+        setIssuers(issuerAddrs.map((address, i) => ({
+          id: address,
+          name: onChainIssuers[i].name || 'Not yet approved',
+          address,
+          ax: onChainIssuers[i].ax.toString(),
+          ay: onChainIssuers[i].ay.toString(),
+          active: onChainIssuers[i].active,
+        })));
+      }
+      if (credential) {
         const cr = new ethers.Contract(DEFAULT_ADDRESSES.contracts.CredentialRegistry, CREDENTIAL_REGISTRY_ABI, provider);
-        const [iss, chk] = await Promise.all([
-          ir.issuers(credential.issuerAddress),
-          cr.check(credential.commitment, credential.issuerAx, credential.issuerAy),
-        ]);
-        setIssuers([{
-          id: 'onchain',
-          name: iss.name || 'Unregistered issuer',
-          address: credential.issuerAddress,
-          ax: iss.ax.toString(),
-          ay: iss.ay.toString(),
-          active: iss.active,
-        }]);
+        const chk = await cr.check(credential.commitment, credential.issuerAx, credential.issuerAy);
         setCredentialValid(chk.ok);
       }
 
@@ -618,7 +745,7 @@ export default function App() {
   // Sync on initial load, and again when the student imports a credential
   useEffect(() => {
     syncFromBlockchain();
-  }, [verifierAddress, credential]);
+  }, [verifierAddress, credential, issuerKey]);
 
   return (
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
@@ -1255,7 +1382,9 @@ export default function App() {
                     ? [{
                         id: 'imported',
                         title: credential.title || 'Imported Credential',
-                        issuer: issuers[0]?.address === credential.issuerAddress ? issuers[0].name : shortAddr(credential.issuerAddress),
+                        issuer:
+                          issuers.find((i) => i.address.toLowerCase() === credential.issuerAddress.toLowerCase())?.name ||
+                          shortAddr(credential.issuerAddress),
                         issuedAt: 'Imported from file',
                         commitment: '0x' + BigInt(credential.commitment).toString(16),
                         data: {
@@ -1438,7 +1567,7 @@ export default function App() {
             </div>
 
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.25fr', gap: '1.75rem' }}>
-              {/* Registered Issuers */}
+              {/* Registered Issuers (read live from IssuerRegistry) */}
               <div>
                 <h2 style={{ fontSize: '1rem', fontWeight: 700, marginBottom: '1rem' }}>
                   Registered On-Chain Issuers
@@ -1448,79 +1577,111 @@ export default function App() {
                     <div key={iss.id} className="glass-card" style={{ padding: '1.25rem' }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
                         <span style={{ fontWeight: 700, fontSize: '0.95rem' }}>{iss.name}</span>
-                        <span className="badge badge-success">Active Root Authority</span>
+                        {iss.active ? (
+                          <span className="badge badge-success">Active Root Authority</span>
+                        ) : (
+                          <span className="badge badge-warning">Not Approved</span>
+                        )}
                       </div>
                       <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginBottom: '0.5rem' }}>
-                        Address: <span className="code-pill">{iss.address.substring(0, 16)}...</span>
+                        Address: <span className="code-pill">{shortAddr(iss.address)}</span>
                       </div>
                       <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
-                        BabyJubJub Key (Ax): <span className="code-pill">{iss.ax.substring(0, 18)}...</span>
+                        BabyJubJub Key (Ax):{' '}
+                        <span className="code-pill">{iss.ax === '0' ? '—' : iss.ax.substring(0, 18) + '...'}</span>
                       </div>
                     </div>
                   ))}
                 </div>
               </div>
 
-              {/* Credential Issuance Form */}
-              <div className="glass-card" style={{ padding: '1.75rem' }}>
-                <h2 style={{ fontSize: '1.125rem', fontWeight: 700, marginBottom: '1rem' }}>
-                  Issue New Certificate
-                </h2>
-
-                <form
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    setStatusMessage({
-                      type: 'success',
-                      title: 'Credential Issued & Committed!',
-                      detail: 'BabyJubJub EdDSA signature created and commitment recorded on-chain.',
-                    });
-                  }}
-                >
-                  <div className="form-group">
-                    <label className="form-label">Issuing Authority</label>
-                    <select
-                      className="form-select"
-                      value={issueForm.issuerId}
-                      onChange={(e) => setIssueForm({ ...issueForm, issuerId: e.target.value })}
-                    >
-                      <option value="uni">Anna University (Academic)</option>
-                      <option value="gov">Tahsildar Revenue Office (Income & Social)</option>
-                    </select>
+              {/* Issuing flow: University key -> Owner approval -> University issues */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                <div className="glass-card" style={{ padding: '1.25rem' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                    <span style={{ fontWeight: 700 }}>Step 1 · University creates its signing key</span>
+                    <span className="badge">MetaMask: University</span>
                   </div>
-
-                  {issueForm.issuerId === 'uni' ? (
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '1rem' }}>
-                      <div className="form-group">
-                        <label className="form-label">Cumulative GPA (e.g. 8.45)</label>
-                        <input
-                          type="text"
-                          className="form-input"
-                          value={issueForm.cgpa}
-                          onChange={(e) => setIssueForm({ ...issueForm, cgpa: e.target.value })}
-                        />
-                      </div>
-                      <div className="form-group">
-                        <label className="form-label">Graduation Year</label>
-                        <input
-                          type="text"
-                          className="form-input"
-                          value={issueForm.gradYear}
-                          onChange={(e) => setIssueForm({ ...issueForm, gradYear: e.target.value })}
-                        />
-                      </div>
+                  <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                    Generated off-chain by the university&apos;s signing service. Only the public key (Ax, Ay) goes on-chain.
+                  </p>
+                  {issuerKey && (
+                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.5rem' }}>
+                      Key for <span className="code-pill">{shortAddr(issuerKey.address)}</span> · Ax{' '}
+                      <span className="code-pill">{issuerKey.ax.substring(0, 14)}...</span>
                     </div>
-                  ) : (
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '1rem' }}>
-                      <div className="form-group">
-                        <label className="form-label">Family Annual Income (₹)</label>
-                        <input
-                          type="text"
-                          className="form-input"
-                          value={issueForm.income}
-                          onChange={(e) => setIssueForm({ ...issueForm, income: e.target.value })}
-                        />
-                      </div>
+                  )}
+                  <button
+                    onClick={handleGenerateIssuerKey}
+                    disabled={issuerBusy !== null}
+                    className="btn btn-secondary"
+                    style={{ width: '100%', marginTop: '0.75rem' }}
+                  >
+                    <Key size={16} />
+                    <span>
+                      {issuerBusy === 'key' ? 'Generating...' : issuerKey ? 'Generate New Key' : 'Generate University Signing Key'}
+                    </span>
+                  </button>
+                </div>
+
+                <div className="glass-card" style={{ padding: '1.25rem' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+                    <span style={{ fontWeight: 700 }}>Step 2 · Owner approves the university</span>
+                    <span className="badge">MetaMask: Owner</span>
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">Institution Name</label>
+                    <input
+                      type="text"
+                      className="form-input"
+                      value={issueForm.issuerName}
+                      onChange={(e) => setIssueForm({ ...issueForm, issuerName: e.target.value })}
+                    />
+                  </div>
+                  <button
+                    onClick={handleApproveIssuer}
+                    disabled={!issuerKey || issuerBusy !== null}
+                    className="btn btn-secondary"
+                    style={{ width: '100%' }}
+                  >
+                    <ShieldCheck size={16} />
+                    <span>{issuerBusy === 'approve' ? 'Waiting for MetaMask...' : 'Approve University On-Chain'}</span>
+                  </button>
+                </div>
+
+                <div className="glass-card" style={{ padding: '1.25rem' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+                    <span style={{ fontWeight: 700 }}>Step 3 · University issues the certificate</span>
+                    <span className="badge">MetaMask: University</span>
+                  </div>
+                  <form onSubmit={handleIssueCredential}>
+                    <div className="form-group">
+                      <label className="form-label">Certificate Title</label>
+                      <input
+                        type="text"
+                        className="form-input"
+                        value={issueForm.title}
+                        onChange={(e) => setIssueForm({ ...issueForm, title: e.target.value })}
+                      />
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0.75rem' }}>
+                      {[
+                        ['cgpa', 'CGPA (e.g. 8.45)'],
+                        ['gradYear', 'Graduation Year'],
+                        ['birthYear', 'Birth Year'],
+                        ['income', 'Annual Income (₹)'],
+                        ['backlogs', 'Active Backlogs'],
+                      ].map(([key, label]) => (
+                        <div className="form-group" key={key}>
+                          <label className="form-label">{label}</label>
+                          <input
+                            type="text"
+                            className="form-input"
+                            value={issueForm[key]}
+                            onChange={(e) => setIssueForm({ ...issueForm, [key]: e.target.value })}
+                          />
+                        </div>
+                      ))}
                       <div className="form-group">
                         <label className="form-label">Social Category</label>
                         <select
@@ -1535,28 +1696,43 @@ export default function App() {
                         </select>
                       </div>
                     </div>
+
+                    <div
+                      style={{
+                        background: 'var(--bg-tertiary)',
+                        padding: '0.85rem',
+                        borderRadius: '0.5rem',
+                        fontSize: '0.78rem',
+                        color: 'var(--text-secondary)',
+                        marginBottom: '1.25rem',
+                      }}
+                    >
+                      🔒 <strong>Privacy Guarantee:</strong> Raw values are never saved on the blockchain.
+                      Only the salted Poseidon commitment{' '}
+                      <code>Poseidon(fields, salt)</code> is registered in CredentialRegistry.
+                    </div>
+
+                    <button type="submit" disabled={!issuerKey || issuerBusy !== null} className="btn btn-primary" style={{ width: '100%' }}>
+                      <Key size={16} />
+                      <span>{issuerBusy === 'issue' ? 'Signing & Registering...' : 'Sign with BabyJubJub & Register On-Chain'}</span>
+                    </button>
+                  </form>
+
+                  {issuedCredential && (
+                    <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginTop: '0.75rem' }}>
+                      Registered commitment{' '}
+                      <span className="code-pill">{'0x' + BigInt(issuedCredential.commitment).toString(16).substring(0, 14)}...</span>{' '}
+                      <button
+                        type="button"
+                        onClick={() => downloadJson('student-credential.json', issuedCredential)}
+                        className="btn btn-secondary"
+                        style={{ fontSize: '0.75rem', padding: '0.3rem 0.6rem', marginTop: '0.5rem' }}
+                      >
+                        Download student-credential.json again
+                      </button>
+                    </div>
                   )}
-
-                  <div
-                    style={{
-                      background: 'var(--bg-tertiary)',
-                      padding: '0.85rem',
-                      borderRadius: '0.5rem',
-                      fontSize: '0.78rem',
-                      color: 'var(--text-secondary)',
-                      marginBottom: '1.25rem',
-                    }}
-                  >
-                    🔒 <strong>Privacy Guarantee:</strong> Raw values are never saved on the blockchain.
-                    Only the salted Poseidon commitment{' '}
-                    <code>Poseidon(fields, salt)</code> is registered in CredentialRegistry.
-                  </div>
-
-                  <button type="submit" className="btn btn-primary" style={{ width: '100%' }}>
-                    <Key size={16} />
-                    <span>Sign with BabyJubJub & Register On-Chain</span>
-                  </button>
-                </form>
+                </div>
               </div>
             </div>
           </div>
