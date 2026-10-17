@@ -26,15 +26,34 @@ import {
   Copy,
   Check,
   Settings,
-  Link2
+  Link2,
+  Upload
 } from 'lucide-react';
 import { ethers } from 'ethers';
 import {
+  BASE_SEPOLIA,
+  CREDENTIAL_REGISTRY_ABI,
   DEFAULT_ADDRESSES,
   ELIGIBILITY_VERIFIER_ABI,
   ISSUER_REGISTRY_ABI,
+  readProvider,
+  readQuery,
   requestWalletConnection,
 } from './contracts';
+import { parseCredential, proveQuery } from './zk';
+
+const CREDENTIAL_STORAGE_KEY = 'proveonce.credential';
+
+function loadStoredCredential() {
+  try {
+    const raw = localStorage.getItem(CREDENTIAL_STORAGE_KEY);
+    return raw ? parseCredential(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+const shortAddr = (a) => `${a.substring(0, 6)}...${a.substring(38)}`;
 
 const FIELD_LABELS = {
   0: { name: 'CGPA (x100)', unit: 'CGPA', format: (v) => (Number(v) / 100).toFixed(2) },
@@ -79,6 +98,10 @@ export default function App() {
   const [apiConnected, setApiConnected] = useState(false);
   const [loading, setLoading] = useState(false);
   const [statusMessage, setStatusMessage] = useState(null);
+
+  // Student's private credential bundle, imported from a file and kept only in this browser
+  const [credential, setCredential] = useState(loadStoredCredential);
+  const [credentialValid, setCredentialValid] = useState(null);
 
   // Pre-configured state simulating on-chain credentials & queries
   const [issuers, setIssuers] = useState([
@@ -246,8 +269,81 @@ export default function App() {
     setTimeout(() => setCopiedText(null), 2000);
   };
 
-  // Simulate proof generation
+  const handleImportCredential = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    try {
+      const cred = parseCredential(await file.text());
+      localStorage.setItem(CREDENTIAL_STORAGE_KEY, JSON.stringify(cred));
+      setCredential(cred);
+      setStatusMessage({
+        type: 'success',
+        title: 'Credential Imported',
+        detail: 'Stored only in this browser. Nothing was sent to the blockchain.',
+      });
+    } catch (err) {
+      setStatusMessage({ type: 'error', title: 'Invalid Credential File', detail: err.message });
+    }
+  };
+
+  // Real proof: generate the Groth16 proof in the browser, then answer via MetaMask
   const handleProveQuery = async (queryId) => {
+    const q = queries.find((x) => x.id === queryId);
+    if (!q?.isOnChain) return simulateProof(queryId);
+    if (!credential) {
+      setStatusMessage({
+        type: 'error',
+        title: 'Import Your Credential First',
+        detail: 'Use "Import Credential" in the vault (build/student-credential.json).',
+      });
+      return;
+    }
+    if (!walletInfo.connected) {
+      await handleConnectWallet();
+      return;
+    }
+
+    try {
+      setProvingQueryId(queryId);
+      setProvingStep(1);
+      const provider = new ethers.BrowserProvider(window.ethereum);
+      const signer = await provider.getSigner();
+      const holder = await signer.getAddress();
+      const { proof, result } = await proveQuery(credential, holder, q.chain);
+
+      setProvingStep(4);
+      setStatusMessage({
+        type: 'info',
+        title: 'Proof Generated — Confirm in MetaMask',
+        detail: `Submitting the Groth16 proof for query #${q.id} from ${shortAddr(holder)}...`,
+      });
+      const contract = new ethers.Contract(verifierAddress, ELIGIBILITY_VERIFIER_ABI, signer);
+      const tx = await contract.answerQuery(BigInt(q.id), proof);
+      const receipt = await tx.wait();
+
+      setProvingStep(5);
+      await syncFromBlockchain();
+      setStatusMessage({
+        type: 'success',
+        title: `Verified On-Chain: ${result ? 'YES' : 'NO'}`,
+        detail: `Query #${q.id} answered in block #${receipt.blockNumber}. The verifier learns only Yes/No.`,
+      });
+    } catch (err) {
+      console.error(err);
+      setStatusMessage({
+        type: 'error',
+        title: 'Proof Rejected or Cancelled',
+        detail: err.reason || err.shortMessage || err.message,
+      });
+    } finally {
+      setProvingQueryId(null);
+      setProvingStep(0);
+    }
+  };
+
+  // Simulated proof animation for the offline sample queries
+  const simulateProof = async (queryId) => {
     setProvingQueryId(queryId);
     setProvingStep(1); // Generating witness
     await new Promise((r) => setTimeout(r, 600));
@@ -286,7 +382,7 @@ export default function App() {
   // Create new Query
   const handleCreateQuery = (e) => {
     e.preventDefault();
-    const newId = String(queries.length + 1);
+    const newId = `S${queries.filter((q) => !q.isOnChain).length + 1}`;
     const condA = `${FIELD_LABELS[queryForm.fieldA].name} ${OP_SYMBOLS[queryForm.opA]} ${queryForm.thresholdA}`;
     const condB = queryForm.useSecond
       ? ` AND ${FIELD_LABELS[queryForm.fieldB].name} ${OP_SYMBOLS[queryForm.opB]} ${queryForm.thresholdB}`
@@ -348,82 +444,71 @@ export default function App() {
     }
   };
 
-  // Sync Live Queries from Deployed Solidity Contract (Sepolia / TestNet)
+  // Sync live queries (and the student's credential status) from the deployed contracts
   const syncFromBlockchain = async () => {
     try {
       setIsSyncing(true);
-      let provider;
-      if (typeof window !== 'undefined' && window.ethereum) {
-        provider = new ethers.BrowserProvider(window.ethereum);
-      } else {
-        provider = new ethers.JsonRpcProvider('https://ethereum-sepolia-rpc.publicnode.com');
-      }
-
+      const provider = readProvider();
       const contract = new ethers.Contract(verifierAddress, ELIGIBILITY_VERIFIER_ABI, provider);
-      const nextIdRaw = await contract.nextQueryId();
-      const nextId = Number(nextIdRaw);
+      const nextId = Number(await contract.nextQueryId());
 
-      const onChainQueries = [];
-      for (let i = 1; i < nextId; i++) {
-        try {
-          const q = await contract.queries(i);
-          const condA = `${FIELD_LABELS[q.fieldA]?.name || 'Field ' + q.fieldA} ${OP_SYMBOLS[q.opA] || '='} ${q.thresholdA}`;
-          const condB = q.useSecond
-            ? ` AND ${FIELD_LABELS[q.fieldB]?.name || 'Field ' + q.fieldB} ${OP_SYMBOLS[q.opB] || '='} ${q.thresholdB}`
-            : '';
+      const chainQueries = await Promise.all(
+        Array.from({ length: nextId - 1 }, (_, i) => readQuery(provider, verifierAddress, i + 1))
+      );
+      const describe = (field, op, threshold) =>
+        `${FIELD_LABELS[field]?.name || 'Field ' + field} ${OP_SYMBOLS[op] || '?'} ${threshold}`;
+      const onChainQueries = chainQueries.reverse().map((q) => ({
+        id: String(q.id),
+        verifier: `On-Chain Verifier (${shortAddr(q.verifier)})`,
+        verifierAddress: q.verifier,
+        readableCondition:
+          describe(q.fieldA, q.opA, q.thresholdA) + (q.useSecond ? ' AND ' + describe(q.fieldB, q.opB, q.thresholdB) : ''),
+        answered: q.answered,
+        result: q.result,
+        holder: q.holder,
+        timestamp: q.answeredAt > 0 ? new Date(q.answeredAt * 1000).toLocaleTimeString() : 'On-Chain',
+        isOnChain: true,
+        chain: q,
+      }));
+      // Keep only "Quick Add" simulated queries; the built-in samples give way to real data
+      setQueries((prev) => [...onChainQueries, ...prev.filter((p) => !p.isOnChain && p.id.startsWith('S'))]);
 
-          onChainQueries.push({
-            id: String(i),
-            verifier: q.verifier === ethers.ZeroAddress ? 'Unknown Verifier' : `On-Chain Verifier (${q.verifier.substring(0, 6)}...${q.verifier.substring(38)})`,
-            verifierAddress: q.verifier,
-            fieldA: Number(q.fieldA),
-            opA: Number(q.opA),
-            thresholdA: Number(q.thresholdA),
-            useSecond: q.useSecond,
-            fieldB: Number(q.fieldB),
-            opB: Number(q.opB),
-            thresholdB: Number(q.thresholdB),
-            readableCondition: condA + condB,
-            answered: q.answered,
-            result: q.result,
-            timestamp: q.answeredAt > 0 ? new Date(Number(q.answeredAt) * 1000).toLocaleTimeString() : 'On-Chain',
-            isOnChain: true,
-          });
-        } catch (itemErr) {
-          console.warn('Error reading query', i, itemErr);
-        }
+      if (credential) {
+        const ir = new ethers.Contract(issuerRegistryAddress, ISSUER_REGISTRY_ABI, provider);
+        const cr = new ethers.Contract(DEFAULT_ADDRESSES.contracts.CredentialRegistry, CREDENTIAL_REGISTRY_ABI, provider);
+        const [iss, chk] = await Promise.all([
+          ir.issuers(credential.issuerAddress),
+          cr.check(credential.commitment, credential.issuerAx, credential.issuerAy),
+        ]);
+        setIssuers([{
+          id: 'onchain',
+          name: iss.name || 'Unregistered issuer',
+          address: credential.issuerAddress,
+          ax: iss.ax.toString(),
+          ay: iss.ay.toString(),
+          active: iss.active,
+        }]);
+        setCredentialValid(chk.ok);
       }
 
-      if (onChainQueries.length > 0) {
-        setQueries((prev) => {
-          const nonOnChain = prev.filter((p) => !p.isOnChain);
-          return [...onChainQueries.reverse(), ...nonOnChain];
-        });
-        setStatusMessage({
-          type: 'success',
-          title: 'Synced with Smart Contract!',
-          detail: `Retrieved ${onChainQueries.length} query records from contract at ${verifierAddress.substring(0, 8)}...`,
-        });
-      } else {
-        setStatusMessage({
-          type: 'info',
-          title: 'Smart Contract Active',
-          detail: `Connected to EligibilityVerifier (${verifierAddress.substring(0, 8)}...). Total on-chain queries: 0.`,
-        });
-      }
+      setStatusMessage({
+        type: 'success',
+        title: 'Synced with Base Sepolia',
+        detail: `Read ${onChainQueries.length} queries from EligibilityVerifier ${verifierAddress.substring(0, 8)}...`,
+      });
     } catch (err) {
       console.error('Sync failed:', err);
       setStatusMessage({
         type: 'error',
         title: 'Blockchain Sync Error',
-        detail: err.message || 'Could not connect to the contract. Verify contract address and network.',
+        detail: err.shortMessage || err.message || 'Could not connect to the contract. Verify contract address and network.',
       });
     } finally {
       setIsSyncing(false);
     }
   };
 
-  // Publish Query via MetaMask to Sepolia TestNet
+  // Publish Query via MetaMask to Base Sepolia
   const handleCreateQueryOnChain = async (e) => {
     e.preventDefault();
     if (!walletInfo.connected) {
@@ -458,14 +543,14 @@ export default function App() {
       setStatusMessage({
         type: 'info',
         title: 'Transaction Submitted to TestNet!',
-        detail: `Mining on Sepolia (Tx: ${tx.hash.substring(0, 12)}...). Please wait...`,
+        detail: `Mining on Base Sepolia (Tx: ${tx.hash.substring(0, 12)}...). Please wait...`,
       });
 
       const receipt = await tx.wait();
 
       setStatusMessage({
         type: 'success',
-        title: 'Query Created On-Chain (Sepolia)!',
+        title: 'Query Created On-Chain (Base Sepolia)!',
         detail: `Confirmed in block #${receipt.blockNumber}. Tx Hash: ${receipt.hash.substring(0, 16)}...`,
       });
 
@@ -488,7 +573,7 @@ export default function App() {
     if (typeof window !== 'undefined' && window.ethereum) {
       const handleAccountsChanged = (accounts) => {
         if (accounts.length === 0) {
-          setWalletInfo({ connected: false, address: '', chainId: null, networkName: 'Sepolia Testnet', balance: '0.0000' });
+          setWalletInfo({ connected: false, address: '', chainId: null, networkName: BASE_SEPOLIA.name, explorerUrl: BASE_SEPOLIA.explorerUrl, balance: '0.0000' });
           setWalletConnected(false);
         } else {
           handleConnectWallet();
@@ -508,10 +593,10 @@ export default function App() {
     }
   }, []);
 
-  // Sync on initial load
+  // Sync on initial load, and again when the student imports a credential
   useEffect(() => {
     syncFromBlockchain();
-  }, [verifierAddress]);
+  }, [verifierAddress, credential]);
 
   return (
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
@@ -674,7 +759,7 @@ export default function App() {
                   boxShadow: walletInfo.connected ? '0 0 8px #10b981' : 'none',
                 }}
               />
-              {walletInfo.connected ? walletInfo.networkName : 'Sepolia Testnet'}
+              {walletInfo.connected ? walletInfo.networkName : 'Base Sepolia'}
             </div>
 
             {/* Contract Config Toggle */}
@@ -1135,10 +1220,33 @@ export default function App() {
                 <h2 style={{ fontSize: '1rem', fontWeight: 700, marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                   <Lock size={16} />
                   <span>Your Stored Credentials (Encrypted)</span>
+                  <label className="btn btn-secondary" style={{ marginLeft: 'auto', fontSize: '0.75rem', padding: '0.3rem 0.65rem', cursor: 'pointer' }}>
+                    <Upload size={13} />
+                    <span>{credential ? 'Replace' : 'Import Credential'}</span>
+                    <input type="file" accept=".json,application/json" onChange={handleImportCredential} style={{ display: 'none' }} />
+                  </label>
                 </h2>
 
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-                  {activeCredentials.map((cred) => (
+                  {(credential
+                    ? [{
+                        id: 'imported',
+                        title: credential.title || 'Imported Credential',
+                        issuer: issuers[0]?.address === credential.issuerAddress ? issuers[0].name : shortAddr(credential.issuerAddress),
+                        issuedAt: 'Imported from file',
+                        commitment: '0x' + BigInt(credential.commitment).toString(16),
+                        data: {
+                          CGPA_X100: credential.fields[0],
+                          GRAD_YEAR: credential.fields[1],
+                          ANNUAL_INCOME: credential.fields[2],
+                          CATEGORY: credential.fields[3],
+                          BIRTH_YEAR: credential.fields[4],
+                          BACKLOGS: credential.fields[5],
+                        },
+                        onChainStatus: credentialValid,
+                      }]
+                    : activeCredentials
+                  ).map((cred) => (
                     <div key={cred.id} className="glass-card" style={{ padding: '1.25rem' }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.75rem' }}>
                         <div>
@@ -1147,7 +1255,11 @@ export default function App() {
                             Issued by {cred.issuer} • {cred.issuedAt}
                           </div>
                         </div>
-                        <span className="badge badge-success">On-Chain Verified</span>
+                        {cred.onChainStatus === false ? (
+                          <span className="badge badge-danger">Revoked / Invalid</span>
+                        ) : (
+                          <span className="badge badge-success">On-Chain Verified</span>
+                        )}
                       </div>
 
                       {/* Attribute pills */}
@@ -1265,6 +1377,10 @@ export default function App() {
                               }}
                             />
                           </div>
+                        </div>
+                      ) : q.isOnChain && q.answered ? (
+                        <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', textAlign: 'center' }}>
+                          Answered on-chain by <span className="code-pill">{shortAddr(q.holder)}</span>
                         </div>
                       ) : (
                         <button
@@ -1579,11 +1695,11 @@ export default function App() {
                       {isPublishingOnChain ? (
                         <>
                           <RefreshCw size={16} className="spin" />
-                          <span>Mining on Sepolia TestNet...</span>
+                          <span>Mining on Base Sepolia...</span>
                         </>
                       ) : (
                         <>
-                          <span>🚀 Publish to Sepolia TestNet (MetaMask)</span>
+                          <span>🚀 Publish to Base Sepolia (MetaMask)</span>
                           <ArrowRight size={16} />
                         </>
                       )}

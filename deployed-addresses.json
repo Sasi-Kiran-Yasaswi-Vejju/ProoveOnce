@@ -1,14 +1,15 @@
 {
-  "network": "sepolia",
-  "chainId": 11155111,
-  "deployedAt": "2026-10-14T12:41:28.280Z",
+  "network": "baseSepolia",
+  "chainId": 84532,
+  "deployedAt": "2026-10-17",
+  "deployBlock": 48225736,
+  "deployedWith": "Remix IDE + MetaMask",
   "contracts": {
-    "IssuerRegistry": "0xd97415bD40345183472c2E9B83A90AcB359091A8",
-    "CredentialRegistry": "0xb2bC6d34eC4B5F8747E943745c29b07866ACF13a",
-    "Groth16Verifier": "0x0CDd3a66F254fFdf393cf78C64530e4A8Ff910A4",
-    "EligibilityVerifier": "0xb40322A439c6ec150aFb5E78119201817f22ae5C",
-    "MerkleCredentialRegistry": "0xc688315e3878a1BA762fb42595dB4e1b2CAF179A",
-    "EligibilityVerifierV2": "0x72FDEd3004d4Bd3fE6c29d60Eb027D8fe8Ac52fF",
-    "DKIMRegistry": "0x5AA618EcDd42Cd9C467A3d5500A3a50757Fdf790"
+    "IssuerRegistry": "0x0CDd3a66F254fFdf393cf78C64530e4A8Ff910A4",
+    "CredentialRegistry": "0xb40322A439c6ec150aFb5E78119201817f22ae5C",
+    "Groth16Verifier": "0xc688315e3878a1BA762fb42595dB4e1b2CAF179A",
+    "EligibilityVerifier": "0x72FDEd3004d4Bd3fE6c29d60Eb027D8fe8Ac52fF",
+    "MerkleCredentialRegistry": "0x5AA618EcDd42Cd9C467A3d5500A3a50757Fdf790",
+    "EligibilityVerifierV2": "0x0Dc3236a2c8eA93CB07A70d6e4A79f0ec676Ba0B"
   }
 }

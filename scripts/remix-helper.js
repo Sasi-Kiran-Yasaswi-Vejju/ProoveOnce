@@ -55,11 +55,28 @@ async function proveCmd(holder, queryId, fieldA, opA, thresholdA, fieldB, opB, t
   return p;
 }
 
+// The student's private bundle for the web UI's "Import credential" button (no issuer private key).
+function exportCredential(issuerAddress) {
+  if (!fs.existsSync(STATE)) throw new Error("run `setup` first");
+  const s = JSON.parse(fs.readFileSync(STATE, "utf8"));
+  const out = path.join(__dirname, "..", "build", "student-credential.json");
+  const bundle = {
+    title: "B.Tech Transcript & Income Certificate",
+    issuerAddress,
+    issuerAx: s.issuer.ax,
+    issuerAy: s.issuer.ay,
+    ...s.cred,
+  };
+  fs.writeFileSync(out, JSON.stringify(bundle, null, 2));
+  console.log("Wrote", out);
+}
+
 async function main() {
   const [cmd, ...args] = process.argv.slice(2);
   if (cmd === "setup") return setup();
   if (cmd === "prove" && args.length >= 5) return proveCmd(...args);
-  console.log("usage:\n  node scripts/remix-helper.js setup\n  node scripts/remix-helper.js prove <studentAddress> <queryId> <fieldA> <opA> <thresholdA> [<fieldB> <opB> <thresholdB>]");
+  if (cmd === "export-credential" && args.length === 1) return exportCredential(args[0]);
+  console.log("usage:\n  node scripts/remix-helper.js setup\n  node scripts/remix-helper.js prove <studentAddress> <queryId> <fieldA> <opA> <thresholdA> [<fieldB> <opB> <thresholdB>]\n  node scripts/remix-helper.js export-credential <issuerAddress>");
   console.log("fields:", FIELD, "\nops: 0 >=, 1 <=, 2 >, 3 <, 4 ==");
 }
 
