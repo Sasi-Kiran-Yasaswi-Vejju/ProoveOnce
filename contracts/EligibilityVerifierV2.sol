@@ -70,6 +70,9 @@ contract EligibilityVerifierV2 {
     event AnonymousQueryAnswered(uint256 indexed queryId, uint256 indexed nullifier, bool result);
 
     constructor(address zkVerifier_, address merkleRegistry_, address issuerRegistry_) {
+        require(zkVerifier_ != address(0), "invalid zk verifier");
+        require(merkleRegistry_ != address(0), "invalid merkle registry");
+        require(issuerRegistry_ != address(0), "invalid issuer registry");
         zkVerifier = IGroth16VerifierV2(zkVerifier_);
         merkleRegistry = IMerkleRegistry(merkleRegistry_);
         issuerRegistry = IIssuerRegistryV2(issuerRegistry_);

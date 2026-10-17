@@ -74,3 +74,30 @@ Open **`http://localhost:5173`** in your browser.
 ```powershell
 npm run server
 ```
+
+## Deploying from Remix
+
+Contracts with dependencies must be deployed in this order. After each deployment,
+copy the deployed contract address from Remix and paste it into the next contract's
+constructor input. The address must be a complete `0x`-prefixed 20-byte address;
+do not leave the input blank and do not paste an account name.
+
+1. Deploy `IssuerRegistry` with no constructor arguments.
+2. Deploy `CredentialRegistry` with the deployed `IssuerRegistry` address:
+   `issuerRegistry_`.
+3. Deploy `Groth16Verifier` with no constructor arguments.
+4. Deploy `EligibilityVerifier` with two arguments, in this order:
+   `zkVerifier_` = `Groth16Verifier` address,
+   `registry_` = `CredentialRegistry` address.
+5. Deploy `MerkleCredentialRegistry` with the deployed `IssuerRegistry` address:
+   `issuerRegistry_`.
+6. Deploy `EligibilityVerifierV2` with three arguments, in this order:
+   `zkVerifier_` = `Groth16Verifier` address,
+   `merkleRegistry_` = `MerkleCredentialRegistry` address,
+   `issuerRegistry_` = `IssuerRegistry` address.
+7. Deploy `DKIMRegistry` with no constructor arguments.
+
+If Remix reports `invalid address ... value=""`, the constructor argument field is
+empty. Deploy `IssuerRegistry` first, then paste its address into the
+`CredentialRegistry` constructor field. This is an ABI encoding error in Remix
+and occurs before the transaction is sent; it is not caused by the registry logic.

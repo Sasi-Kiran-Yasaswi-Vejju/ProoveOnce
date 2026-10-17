@@ -20,5 +20,10 @@ module.exports = {
       url: ARB_SEPOLIA_RPC_URL,
       accounts: PRIVATE_KEY,
     },
+    baseSepolia: {
+      url: process.env.BASE_SEPOLIA_RPC_URL || "https://sepolia.base.org",
+      accounts: PRIVATE_KEY,
+      chainId: 84532,
+    },
   },
 };

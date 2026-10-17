@@ -40,6 +40,7 @@ contract MerkleCredentialRegistry {
     event LeafRevoked(uint256 indexed leaf);
 
     constructor(address issuerRegistry_) {
+        require(issuerRegistry_ != address(0), "invalid issuer registry");
         issuerRegistry = IIssuerRegistry(issuerRegistry_);
 
         // Initialize zero values for depth 8 (dummy pre-computed initial values for BN128)

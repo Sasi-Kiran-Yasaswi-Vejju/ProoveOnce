@@ -26,6 +26,7 @@ contract CredentialRegistry {
     event CredentialRevoked(uint256 indexed commitment, address indexed issuer);
 
     constructor(address issuerRegistry_) {
+        require(issuerRegistry_ != address(0), "invalid issuer registry");
         issuerRegistry = IIssuerRegistry(issuerRegistry_);
     }
 

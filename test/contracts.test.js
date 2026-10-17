@@ -27,6 +27,14 @@ describe("Prove-once contracts (mock verifier)", () => {
     fieldB: 0, opB: 0, thresholdB: 0, ...over,
   });
 
+  const answer = (signer, id, over = {}) =>
+    elig.connect(signer).answerQuery(id, {
+      a: zeros2,
+      b: zeros22,
+      c: zeros2,
+      input: signals(over),
+    });
+
   beforeEach(async () => {
     [owner, uni, other, student, bank] = await ethers.getSigners();
     issuerReg = await ethers.deployContract("IssuerRegistry");
@@ -41,7 +49,7 @@ describe("Prove-once contracts (mock verifier)", () => {
 
   it("answers a valid query with Yes", async () => {
     await elig.connect(bank).createQuery(query());
-    await elig.connect(student).answerQuery(1, zeros2, zeros22, zeros2, signals());
+    await answer(student, 1);
     const [answered, result] = await elig.getResult(1);
     expect(answered).to.equal(true);
     expect(result).to.equal(true);
@@ -49,7 +57,7 @@ describe("Prove-once contracts (mock verifier)", () => {
 
   it("records No when the proof says result = 0", async () => {
     await elig.connect(bank).createQuery(query());
-    await elig.connect(student).answerQuery(1, zeros2, zeros22, zeros2, signals({ result: 0n }));
+    await answer(student, 1, { result: 0n });
     const [, result] = await elig.getResult(1);
     expect(result).to.equal(false);
   });
@@ -57,14 +65,14 @@ describe("Prove-once contracts (mock verifier)", () => {
   it("rejects a proof for an easier threshold than the one asked", async () => {
     await elig.connect(bank).createQuery(query());
     await expect(
-      elig.connect(student).answerQuery(1, zeros2, zeros22, zeros2, signals({ tha: 500n }))
-    ).to.be.revertedWith("question A mismatch");
+      answer(student, 1, { tha: 500n })
+    ).to.be.revertedWith("threshold A mismatch");
   });
 
   it("rejects a proof copied by someone else", async () => {
     await elig.connect(bank).createQuery(query());
     await expect(
-      elig.connect(other).answerQuery(1, zeros2, zeros22, zeros2, signals())
+      answer(other, 1)
     ).to.be.revertedWith("proof not bound to sender");
   });
 
@@ -72,7 +80,7 @@ describe("Prove-once contracts (mock verifier)", () => {
     await elig.connect(bank).createQuery(query());
     await elig.connect(bank).createQuery(query());
     await expect(
-      elig.connect(student).answerQuery(2, zeros2, zeros22, zeros2, signals({ nonce: 1n }))
+      answer(student, 2, { nonce: 1n })
     ).to.be.revertedWith("wrong query id");
   });
 
@@ -80,21 +88,21 @@ describe("Prove-once contracts (mock verifier)", () => {
     await credReg.connect(uni).revoke(COMMIT);
     await elig.connect(bank).createQuery(query());
     await expect(
-      elig.connect(student).answerQuery(1, zeros2, zeros22, zeros2, signals())
+      answer(student, 1)
     ).to.be.revertedWith("credential invalid, expired or revoked");
   });
 
   it("rejects an issuer the verifier does not accept", async () => {
     await elig.connect(bank).createQuery(query({ requiredIssuer: other.address }));
     await expect(
-      elig.connect(student).answerQuery(1, zeros2, zeros22, zeros2, signals())
+      answer(student, 1)
     ).to.be.revertedWith("issuer not accepted");
   });
 
   it("rejects a wrong issuer key inside the proof", async () => {
     await elig.connect(bank).createQuery(query());
     await expect(
-      elig.connect(student).answerQuery(1, zeros2, zeros22, zeros2, signals({ ax: 5n }))
+      answer(student, 1, { ax: 5n })
     ).to.be.revertedWith("credential invalid, expired or revoked");
   });
 

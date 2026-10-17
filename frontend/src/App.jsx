@@ -24,8 +24,17 @@ import {
   FileCode,
   Info,
   Copy,
-  Check
+  Check,
+  Settings,
+  Link2
 } from 'lucide-react';
+import { ethers } from 'ethers';
+import {
+  DEFAULT_ADDRESSES,
+  ELIGIBILITY_VERIFIER_ABI,
+  ISSUER_REGISTRY_ABI,
+  requestWalletConnection,
+} from './contracts';
 
 const FIELD_LABELS = {
   0: { name: 'CGPA (x100)', unit: 'CGPA', format: (v) => (Number(v) / 100).toFixed(2) },
@@ -48,6 +57,23 @@ export default function App() {
   const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'dark');
   const [activeTab, setActiveTab] = useState('landing');
   const [walletConnected, setWalletConnected] = useState(false);
+  const [walletInfo, setWalletInfo] = useState({
+    connected: false,
+    address: '',
+    chainId: 84532,
+    networkName: 'Base Sepolia',
+    explorerUrl: 'https://sepolia.basescan.org',
+    balance: '0.0000',
+  });
+  const [verifierAddress, setVerifierAddress] = useState(
+    DEFAULT_ADDRESSES.contracts.EligibilityVerifier
+  );
+  const [issuerRegistryAddress, setIssuerRegistryAddress] = useState(
+    DEFAULT_ADDRESSES.contracts.IssuerRegistry
+  );
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [isPublishingOnChain, setIsPublishingOnChain] = useState(false);
+  const [showConfig, setShowConfig] = useState(false);
   const [selectedRole, setSelectedRole] = useState('student');
   const [copiedText, setCopiedText] = useState(null);
   const [apiConnected, setApiConnected] = useState(false);
@@ -286,10 +312,206 @@ export default function App() {
     setQueries([newQ, ...queries]);
     setStatusMessage({
       type: 'success',
-      title: 'Query Created On-Chain',
+      title: 'Query Created (Simulated)',
       detail: `Query #${newId} is now awaiting holder proof submission.`,
     });
   };
+
+  // Real MetaMask Connection Handler
+  const handleConnectWallet = async () => {
+    try {
+      setLoading(true);
+      const data = await requestWalletConnection();
+      setWalletInfo({
+        connected: true,
+        address: data.address,
+        chainId: data.chainId,
+        networkName: data.networkName,
+        explorerUrl: data.explorerUrl,
+        balance: data.balance,
+      });
+      setWalletConnected(true);
+      setStatusMessage({
+        type: 'success',
+        title: 'MetaMask Connected!',
+        detail: `Connected as ${data.address.substring(0, 6)}...${data.address.substring(38)} (${data.networkName})`,
+      });
+    } catch (err) {
+      console.error(err);
+      setStatusMessage({
+        type: 'error',
+        title: 'Wallet Connection Failed',
+        detail: err.message || 'Please install MetaMask or check network.',
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Sync Live Queries from Deployed Solidity Contract (Sepolia / TestNet)
+  const syncFromBlockchain = async () => {
+    try {
+      setIsSyncing(true);
+      let provider;
+      if (typeof window !== 'undefined' && window.ethereum) {
+        provider = new ethers.BrowserProvider(window.ethereum);
+      } else {
+        provider = new ethers.JsonRpcProvider('https://ethereum-sepolia-rpc.publicnode.com');
+      }
+
+      const contract = new ethers.Contract(verifierAddress, ELIGIBILITY_VERIFIER_ABI, provider);
+      const nextIdRaw = await contract.nextQueryId();
+      const nextId = Number(nextIdRaw);
+
+      const onChainQueries = [];
+      for (let i = 1; i < nextId; i++) {
+        try {
+          const q = await contract.queries(i);
+          const condA = `${FIELD_LABELS[q.fieldA]?.name || 'Field ' + q.fieldA} ${OP_SYMBOLS[q.opA] || '='} ${q.thresholdA}`;
+          const condB = q.useSecond
+            ? ` AND ${FIELD_LABELS[q.fieldB]?.name || 'Field ' + q.fieldB} ${OP_SYMBOLS[q.opB] || '='} ${q.thresholdB}`
+            : '';
+
+          onChainQueries.push({
+            id: String(i),
+            verifier: q.verifier === ethers.ZeroAddress ? 'Unknown Verifier' : `On-Chain Verifier (${q.verifier.substring(0, 6)}...${q.verifier.substring(38)})`,
+            verifierAddress: q.verifier,
+            fieldA: Number(q.fieldA),
+            opA: Number(q.opA),
+            thresholdA: Number(q.thresholdA),
+            useSecond: q.useSecond,
+            fieldB: Number(q.fieldB),
+            opB: Number(q.opB),
+            thresholdB: Number(q.thresholdB),
+            readableCondition: condA + condB,
+            answered: q.answered,
+            result: q.result,
+            timestamp: q.answeredAt > 0 ? new Date(Number(q.answeredAt) * 1000).toLocaleTimeString() : 'On-Chain',
+            isOnChain: true,
+          });
+        } catch (itemErr) {
+          console.warn('Error reading query', i, itemErr);
+        }
+      }
+
+      if (onChainQueries.length > 0) {
+        setQueries((prev) => {
+          const nonOnChain = prev.filter((p) => !p.isOnChain);
+          return [...onChainQueries.reverse(), ...nonOnChain];
+        });
+        setStatusMessage({
+          type: 'success',
+          title: 'Synced with Smart Contract!',
+          detail: `Retrieved ${onChainQueries.length} query records from contract at ${verifierAddress.substring(0, 8)}...`,
+        });
+      } else {
+        setStatusMessage({
+          type: 'info',
+          title: 'Smart Contract Active',
+          detail: `Connected to EligibilityVerifier (${verifierAddress.substring(0, 8)}...). Total on-chain queries: 0.`,
+        });
+      }
+    } catch (err) {
+      console.error('Sync failed:', err);
+      setStatusMessage({
+        type: 'error',
+        title: 'Blockchain Sync Error',
+        detail: err.message || 'Could not connect to the contract. Verify contract address and network.',
+      });
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  // Publish Query via MetaMask to Sepolia TestNet
+  const handleCreateQueryOnChain = async (e) => {
+    e.preventDefault();
+    if (!walletInfo.connected) {
+      await handleConnectWallet();
+      return;
+    }
+
+    try {
+      setIsPublishingOnChain(true);
+      const provider = new ethers.BrowserProvider(window.ethereum);
+      const signer = await provider.getSigner();
+      const contract = new ethers.Contract(verifierAddress, ELIGIBILITY_VERIFIER_ABI, signer);
+
+      setStatusMessage({
+        type: 'info',
+        title: 'MetaMask Approval Requested',
+        detail: 'Please confirm the createQuery transaction in MetaMask...',
+      });
+
+      const tx = await contract.createQuery({
+        expectedHolder: ethers.ZeroAddress,
+        requiredIssuer: ethers.ZeroAddress,
+        fieldA: Number(queryForm.fieldA),
+        opA: Number(queryForm.opA),
+        thresholdA: BigInt(queryForm.thresholdA),
+        useSecond: Boolean(queryForm.useSecond),
+        fieldB: Number(queryForm.fieldB),
+        opB: Number(queryForm.opB),
+        thresholdB: BigInt(queryForm.thresholdB),
+      });
+
+      setStatusMessage({
+        type: 'info',
+        title: 'Transaction Submitted to TestNet!',
+        detail: `Mining on Sepolia (Tx: ${tx.hash.substring(0, 12)}...). Please wait...`,
+      });
+
+      const receipt = await tx.wait();
+
+      setStatusMessage({
+        type: 'success',
+        title: 'Query Created On-Chain (Sepolia)!',
+        detail: `Confirmed in block #${receipt.blockNumber}. Tx Hash: ${receipt.hash.substring(0, 16)}...`,
+      });
+
+      // Automatically refresh queries from chain
+      await syncFromBlockchain();
+    } catch (err) {
+      console.error(err);
+      setStatusMessage({
+        type: 'error',
+        title: 'Transaction Rejected or Failed',
+        detail: err.reason || err.message || 'Transaction could not be confirmed.',
+      });
+    } finally {
+      setIsPublishingOnChain(false);
+    }
+  };
+
+  // Listen to MetaMask account / network change
+  useEffect(() => {
+    if (typeof window !== 'undefined' && window.ethereum) {
+      const handleAccountsChanged = (accounts) => {
+        if (accounts.length === 0) {
+          setWalletInfo({ connected: false, address: '', chainId: null, networkName: 'Sepolia Testnet', balance: '0.0000' });
+          setWalletConnected(false);
+        } else {
+          handleConnectWallet();
+        }
+      };
+      const handleChainChanged = () => {
+        window.location.reload();
+      };
+      window.ethereum.on('accountsChanged', handleAccountsChanged);
+      window.ethereum.on('chainChanged', handleChainChanged);
+      return () => {
+        if (window.ethereum.removeListener) {
+          window.ethereum.removeListener('accountsChanged', handleAccountsChanged);
+          window.ethereum.removeListener('chainChanged', handleChainChanged);
+        }
+      };
+    }
+  }, []);
+
+  // Sync on initial load
+  useEffect(() => {
+    syncFromBlockchain();
+  }, [verifierAddress]);
 
   return (
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
@@ -433,7 +655,7 @@ export default function App() {
               className="badge"
               style={{
                 background: 'var(--bg-tertiary)',
-                color: apiConnected ? '#10b981' : '#f59e0b',
+                color: walletInfo.connected ? '#10b981' : '#38bdf8',
                 border: '1px solid var(--border-primary)',
                 padding: '0.35rem 0.65rem',
                 fontSize: '0.75rem',
@@ -445,14 +667,25 @@ export default function App() {
             >
               <span
                 style={{
-                  width: '6px',
-                  height: '6px',
+                  width: '7px',
+                  height: '7px',
                   borderRadius: '50%',
-                  background: apiConnected ? '#10b981' : '#f59e0b',
+                  background: walletInfo.connected ? '#10b981' : '#38bdf8',
+                  boxShadow: walletInfo.connected ? '0 0 8px #10b981' : 'none',
                 }}
               />
-              {apiConnected ? 'Hardhat Node (3001)' : 'In-Memory EVM'}
+              {walletInfo.connected ? walletInfo.networkName : 'Sepolia Testnet'}
             </div>
+
+            {/* Contract Config Toggle */}
+            <button
+              onClick={() => setShowConfig(!showConfig)}
+              className="btn btn-secondary"
+              title="Configure Deployed Contract Address (Remix IDE)"
+              style={{ padding: '0.5rem 0.65rem' }}
+            >
+              <Settings size={16} />
+            </button>
 
             {/* Theme Toggle Button */}
             <button
@@ -466,16 +699,107 @@ export default function App() {
 
             {/* Wallet Button */}
             <button
-              onClick={() => setWalletConnected(!walletConnected)}
-              className={walletConnected ? 'btn btn-secondary' : 'btn btn-primary'}
-              style={{ fontSize: '0.82rem' }}
+              onClick={walletInfo.connected ? () => setWalletConnected(!walletConnected) : handleConnectWallet}
+              className={walletInfo.connected ? 'btn btn-secondary' : 'btn btn-primary'}
+              style={{ fontSize: '0.82rem', display: 'flex', alignItems: 'center', gap: '0.4rem' }}
             >
               <Wallet size={16} />
-              <span>{walletConnected ? '0x8ba1...3a9f' : 'Connect Wallet'}</span>
+              <span>
+                {walletInfo.connected
+                  ? `${walletInfo.address.substring(0, 6)}...${walletInfo.address.substring(38)} (${walletInfo.balance} ETH)`
+                  : 'Connect MetaMask'}
+              </span>
             </button>
           </div>
         </div>
       </header>
+
+      {/* Live Blockchain & Remix Synchronization Toolbar */}
+      <div
+        style={{
+          background: 'var(--bg-card)',
+          borderBottom: '1px solid var(--border-primary)',
+          padding: '0.6rem 0',
+          fontSize: '0.8rem',
+        }}
+      >
+        <div
+          className="app-container"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            flexWrap: 'wrap',
+            gap: '0.75rem',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+              <span style={{ color: 'var(--text-muted)' }}>Solidity Verifier:</span>
+              <span className="code-pill" style={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>
+                {verifierAddress}
+              </span>
+              <button
+                onClick={() => copyToClipboard(verifierAddress)}
+                title="Copy Address"
+                style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }}
+              >
+                {copiedText === verifierAddress ? <Check size={14} color="#10b981" /> : <Copy size={14} />}
+              </button>
+              <a
+                href={`${walletInfo.explorerUrl || 'https://sepolia.basescan.org'}/address/${verifierAddress}`}
+                target="_blank"
+                rel="noreferrer"
+                title={`View on ${walletInfo.networkName} Explorer`}
+                style={{ color: 'var(--accent-primary)', display: 'inline-flex', alignItems: 'center', marginLeft: '0.2rem' }}
+              >
+                <ExternalLink size={13} />
+              </a>
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+            <button
+              onClick={syncFromBlockchain}
+              disabled={isSyncing}
+              className="btn btn-secondary"
+              style={{ fontSize: '0.78rem', padding: '0.35rem 0.75rem', display: 'flex', alignItems: 'center', gap: '0.35rem' }}
+            >
+              <RefreshCw size={13} className={isSyncing ? 'spin' : ''} />
+              <span>{isSyncing ? 'Syncing...' : 'Sync with TestNet'}</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Address override drawer if deployed in Remix */}
+        {showConfig && (
+          <div className="app-container" style={{ marginTop: '0.75rem', padding: '0.75rem', background: 'var(--bg-tertiary)', borderRadius: '0.5rem' }}>
+            <div style={{ fontWeight: 600, fontSize: '0.85rem', marginBottom: '0.35rem' }}>
+              ⚙️ Custom Contract Address (If you deployed a fresh contract in Remix IDE):
+            </div>
+            <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+              <input
+                type="text"
+                className="form-input"
+                style={{ fontSize: '0.8rem', padding: '0.4rem 0.6rem' }}
+                placeholder="Paste newly deployed EligibilityVerifier address from Remix (0x...)"
+                value={verifierAddress}
+                onChange={(e) => setVerifierAddress(e.target.value.trim())}
+              />
+              <button
+                onClick={() => {
+                  syncFromBlockchain();
+                  setShowConfig(false);
+                }}
+                className="btn btn-primary"
+                style={{ fontSize: '0.78rem', padding: '0.4rem 0.8rem', whiteSpace: 'nowrap' }}
+              >
+                Save &amp; Connect
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
 
       {/* Main Content Areas */}
       <main style={{ flex: 1, padding: '2rem 0' }}>
@@ -1244,18 +1568,54 @@ export default function App() {
                     )}
                   </div>
 
-                  <button type="submit" className="btn btn-primary" style={{ width: '100%' }}>
-                    <span>Publish Query to Blockchain</span>
-                    <ArrowRight size={16} />
-                  </button>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
+                    <button
+                      type="button"
+                      onClick={handleCreateQueryOnChain}
+                      disabled={isPublishingOnChain}
+                      className="btn btn-primary"
+                      style={{ width: '100%', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '0.5rem' }}
+                    >
+                      {isPublishingOnChain ? (
+                        <>
+                          <RefreshCw size={16} className="spin" />
+                          <span>Mining on Sepolia TestNet...</span>
+                        </>
+                      ) : (
+                        <>
+                          <span>🚀 Publish to Sepolia TestNet (MetaMask)</span>
+                          <ArrowRight size={16} />
+                        </>
+                      )}
+                    </button>
+
+                    <button
+                      type="submit"
+                      className="btn btn-secondary"
+                      style={{ width: '100%', fontSize: '0.82rem' }}
+                    >
+                      <span>⚡ Quick Add (Simulated Demo / No Gas)</span>
+                    </button>
+                  </div>
                 </form>
               </div>
 
               {/* On-Chain Query Audit Log */}
               <div>
-                <h2 style={{ fontSize: '1.125rem', fontWeight: 700, marginBottom: '1rem' }}>
-                  Audited Queries & Results
-                </h2>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+                  <h2 style={{ fontSize: '1.125rem', fontWeight: 700, margin: 0 }}>
+                    Audited Queries &amp; Results
+                  </h2>
+                  <button
+                    onClick={syncFromBlockchain}
+                    disabled={isSyncing}
+                    className="btn btn-secondary"
+                    style={{ fontSize: '0.78rem', padding: '0.35rem 0.65rem', display: 'flex', alignItems: 'center', gap: '0.35rem' }}
+                  >
+                    <RefreshCw size={13} className={isSyncing ? 'spin' : ''} />
+                    <span>{isSyncing ? 'Syncing...' : 'Sync TestNet'}</span>
+                  </button>
+                </div>
 
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '0.875rem' }}>
                   {queries.map((q) => (

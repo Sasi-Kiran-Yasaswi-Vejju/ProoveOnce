@@ -68,16 +68,26 @@ contract EligibilityVerifier {
         uint64 answeredAt;
     }
 
+    /// @dev Packed proof to avoid "stack too deep" in answerQuery.
+    struct Proof {
+        uint256[2] a;
+        uint256[2][2] b;
+        uint256[2] c;
+        uint256[13] input;
+    }
+
     IGroth16Verifier public immutable zkVerifier;
     ICredentialRegistry public immutable registry;
 
     uint256 public nextQueryId = 1;
-    mapping(uint256 => Query) public queries;
+    mapping(uint256 => Query) internal queries;
 
     event QueryCreated(uint256 indexed queryId, address indexed verifier);
     event QueryAnswered(uint256 indexed queryId, address indexed holder, bool result);
 
     constructor(address zkVerifier_, address registry_) {
+        require(zkVerifier_ != address(0), "invalid zk verifier");
+        require(registry_ != address(0), "invalid credential registry");
         zkVerifier = IGroth16Verifier(zkVerifier_);
         registry = ICredentialRegistry(registry_);
     }
@@ -86,42 +96,38 @@ contract EligibilityVerifier {
         require(q.fieldA <= MAX_FIELD && q.fieldB <= MAX_FIELD, "bad field");
         require(q.opA <= MAX_OP && q.opB <= MAX_OP, "bad op");
         id = nextQueryId++;
-        queries[id] = Query({
-            verifier: msg.sender,
-            expectedHolder: q.expectedHolder,
-            requiredIssuer: q.requiredIssuer,
-            fieldA: q.fieldA,
-            opA: q.opA,
-            thresholdA: q.thresholdA,
-            useSecond: q.useSecond,
-            fieldB: q.fieldB,
-            opB: q.opB,
-            thresholdB: q.thresholdB,
-            answered: false,
-            result: false,
-            holder: address(0),
-            answeredAt: 0
-        });
+
+        // Write fields one-by-one to avoid "stack too deep" with the legacy codegen.
+        Query storage nq = queries[id];
+        nq.verifier = msg.sender;
+        nq.expectedHolder = q.expectedHolder;
+        nq.requiredIssuer = q.requiredIssuer;
+        nq.fieldA = q.fieldA;
+        nq.opA = q.opA;
+        nq.thresholdA = q.thresholdA;
+        nq.useSecond = q.useSecond;
+        nq.fieldB = q.fieldB;
+        nq.opB = q.opB;
+        nq.thresholdB = q.thresholdB;
+        nq.answered = false;
+        nq.result = false;
+        nq.holder = address(0);
+        nq.answeredAt = 0;
+
         emit QueryCreated(id, msg.sender);
     }
 
-    function answerQuery(
-        uint256 id,
-        uint256[2] calldata a,
-        uint256[2][2] calldata b,
-        uint256[2] calldata c,
-        uint256[13] calldata s
-    ) external {
+    function answerQuery(uint256 id, Proof calldata proof) external {
         Query storage q = queries[id];
         require(q.verifier != address(0), "no such query");
         require(!q.answered, "already answered");
         if (q.expectedHolder != address(0)) require(msg.sender == q.expectedHolder, "wrong holder");
 
-        _checkBinding(q, id, s);
-        require(zkVerifier.verifyProof(a, b, c, s), "invalid proof");
+        _checkBinding(q, id, proof.input);
+        require(zkVerifier.verifyProof(proof.a, proof.b, proof.c, proof.input), "invalid proof");
 
         q.answered = true;
-        q.result = (s[S_RESULT] == 1);
+        q.result = (proof.input[S_RESULT] == 1);
         q.holder = msg.sender;
         q.answeredAt = uint64(block.timestamp);
         emit QueryAnswered(id, msg.sender, q.result);
@@ -134,20 +140,35 @@ contract EligibilityVerifier {
         return (q.answered, q.result);
     }
 
+    /// @return verifier who created the query
+    /// @return answered whether it has been answered
+    /// @return result   true = Yes (eligible), false = No
+    /// @return holder   who answered
+    function getQuery(uint256 id)
+        external
+        view
+        returns (address verifier, bool answered, bool result, address holder)
+    {
+        Query storage q = queries[id];
+        return (q.verifier, q.answered, q.result, q.holder);
+    }
+
     // The proof is only meaningful if its public inputs are exactly the question this
     // verifier asked, for this student, and the credential is valid and trusted.
     function _checkBinding(Query storage q, uint256 id, uint256[13] calldata s) internal view {
         require(s[S_NONCE] == id, "wrong query id");
         require(s[S_HOLDER] == uint256(uint160(msg.sender)), "proof not bound to sender");
-        require(
-            s[S_FIELD_A] == q.fieldA && s[S_OP_A] == q.opA && s[S_TH_A] == q.thresholdA,
-            "question A mismatch"
-        );
+
+        // Check each field individually to limit stack depth.
+        require(s[S_FIELD_A] == q.fieldA, "field A mismatch");
+        require(s[S_OP_A] == q.opA, "op A mismatch");
+        require(s[S_TH_A] == q.thresholdA, "threshold A mismatch");
+
         require(s[S_USE_B] == (q.useSecond ? 1 : 0), "second-question flag mismatch");
-        require(
-            s[S_FIELD_B] == q.fieldB && s[S_OP_B] == q.opB && s[S_TH_B] == q.thresholdB,
-            "question B mismatch"
-        );
+
+        require(s[S_FIELD_B] == q.fieldB, "field B mismatch");
+        require(s[S_OP_B] == q.opB, "op B mismatch");
+        require(s[S_TH_B] == q.thresholdB, "threshold B mismatch");
 
         (bool ok, address issuer) = registry.check(s[S_COMMITMENT], s[S_AX], s[S_AY]);
         require(ok, "credential invalid, expired or revoked");
