@@ -23,7 +23,16 @@ export const BASE_SEPOLIA = {
 
 /** Read-only provider that works even when MetaMask is on another network. */
 export function readProvider() {
-  return new ethers.JsonRpcProvider(BASE_SEPOLIA.rpcUrl, BASE_SEPOLIA.chainId, { staticNetwork: true });
+  // No JSON-RPC batching: the public endpoint rejects large batches ("could not coalesce error").
+  return new ethers.JsonRpcProvider(BASE_SEPOLIA.rpcUrl, BASE_SEPOLIA.chainId, { staticNetwork: true, batchMaxCount: 1 });
+}
+
+/** MetaMask's own RPC, used as a fallback when it is connected to Base Sepolia. */
+export async function walletReadProvider() {
+  if (typeof window === 'undefined' || !window.ethereum) return null;
+  const provider = new ethers.BrowserProvider(window.ethereum);
+  const { chainId } = await provider.getNetwork();
+  return Number(chainId) === BASE_SEPOLIA.chainId ? provider : null;
 }
 
 export const ISSUER_REGISTRY_ABI = [

@@ -37,6 +37,7 @@ import {
   ELIGIBILITY_VERIFIER_ABI,
   ISSUER_REGISTRY_ABI,
   readProvider,
+  walletReadProvider,
   readQuery,
   requestWalletConnection,
 } from './contracts';
@@ -595,13 +596,25 @@ export default function App() {
   const syncFromBlockchain = async () => {
     try {
       setIsSyncing(true);
-      const provider = readProvider();
-      const contract = new ethers.Contract(verifierAddress, ELIGIBILITY_VERIFIER_ABI, provider);
-      const nextId = Number(await contract.nextQueryId());
-
-      const chainQueries = await Promise.all(
-        Array.from({ length: nextId - 1 }, (_, i) => readQuery(provider, verifierAddress, i + 1))
-      );
+      // Public RPC first; if it refuses (rate limit / network), read through MetaMask instead
+      const readAll = async (provider) => {
+        const contract = new ethers.Contract(verifierAddress, ELIGIBILITY_VERIFIER_ABI, provider);
+        const nextId = Number(await contract.nextQueryId());
+        const list = [];
+        for (let i = 1; i < nextId; i++) list.push(await readQuery(provider, verifierAddress, i));
+        return list;
+      };
+      let provider = readProvider();
+      let chainQueries;
+      try {
+        chainQueries = await readAll(provider);
+      } catch (rpcErr) {
+        const wallet = await walletReadProvider();
+        if (!wallet) throw rpcErr;
+        console.warn('Public RPC failed, reading via MetaMask', rpcErr);
+        provider = wallet;
+        chainQueries = await readAll(provider);
+      }
       const describe = (field, op, threshold) =>
         `${FIELD_LABELS[field]?.name || 'Field ' + field} ${OP_SYMBOLS[op] || '?'} ${threshold}`;
       const onChainQueries = chainQueries.reverse().map((q) => ({
